@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Mail Login Finder</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#0f1720;color:#e6eef8}
+    .card{width:720px;max-width:96%;background:#0b1220;border-radius:12px;padding:20px;box-shadow:0 8px 30px rgba(2,6,23,.7)}
+    h1{margin:0 0 10px;font-size:20px}
+    .row{display:flex;gap:8px;margin-bottom:12px}
+    input[type="email"]{flex:1;padding:10px;border-radius:8px;border:1px solid #223147;background:#051023;color:#e6eef8}
+    button{padding:10px 14px;border-radius:8px;border:0;background:#f97316;color:#071126;cursor:pointer;font-weight:600}
+    .list{margin-top:14px}
+    .item{background:#07102a;padding:10px;border-radius:8px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+    .meta{font-size:13px;color:#9fb0d4}
+    a.btn{padding:8px 10px;border-radius:6px;background:#0ea5a4;color:#021619;text-decoration:none;font-weight:600}
+    small{color:#8fa7ca}
+    .hint{font-size:13px;color:#9fb0d4;margin-top:8px}
+    footer{margin-top:14px;font-size:12px;color:#8aa6cf}
+    .mx{font-size:13px;color:#c9e0ff}
+  </style>
+</head>
+<body>
+  <div class="card" role="application" aria-label="Mail login finder">
+    <h1>Mail Login Finder</h1>
+    <div class="row">
+      <input id="email" type="email" placeholder="enter an email (e.g. user@example.com)" aria-label="email">
+      <button id="search">Search</button>
+    </div>
+    <div id="status" class="hint">Enter an email and click Search. The app will suggest likely mail login pages.</div>
+    <div id="results" class="list" aria-live="polite"></div>
+    <footer>Uses DNS MX lookup to improve suggestions. Suggestions are guesses — open links to check.</footer>
+  </div>
+
+  <script>
+    const searchBtn = document.getElementById('search');
+    const emailInput = document.getElementById('email');
+    const results = document.getElementById('results');
+    const status = document.getElementById('status');
+
+    const knownProviders = {
+      "gmail.com": ["https://mail.google.com","https://accounts.google.com/"],
+      "googlemail.com": ["https://mail.google.com"],
+      "outlook.com": ["https://outlook.live.com/","https://outlook.office365.com/"],
+      "hotmail.com": ["https://outlook.live.com/"],
+      "yahoo.com": ["https://mail.yahoo.com/"],
+      "icloud.com": ["https://www.icloud.com/mail/"],
+      "protonmail.com": ["https://mail.proton.me/"],
+      "zoho.com": ["https://mail.zoho.com/","https://www.zoho.com/mail.html"],
+      "fastmail.com": ["https://www.fastmail.com/"],
+      "yandex.com": ["https://mail.yandex.com/","https://mail.yandex.ua/"]
+    };
+
+    function normalizeDomain(d){ return d.trim().toLowerCase(); }
+
+    function mkCandidates(domain, mxHosts = []) {
+      const d = normalizeDomain(domain);
+      const suggestions = new Set();
+
+      if(knownProviders[d]) knownProviders[d].forEach(u => suggestions.add(u));
+
+      [
+        `https://mail.${d}/`,
+        `https://webmail.${d}/`,
+        `https://www.${d}/webmail/`,
+        `https://webmail.${d}/webmail/`,
+        `https://${d}/webmail/`,
+        `https://mail.${d}/roundcube/`,
+        `https://roundcube.${d}/`,
+        `https://${d}/roundcube/`,
+        `https://login.${d}/`,
+        `https://mail.${d}:2096/`,
+        `https://webmail.${d}:2096/`
+      ].forEach(s => suggestions.add(s));
+
+      mxHosts.forEach(mx => {
+        const host = mx.replace(/\.+$/, '');
+        suggestions.add(`https://${host}/`);
+        suggestions.add(`https://mail.${host}/`);
+        if(/google|gmail/.test(host)) suggestions.add('https://mail.google.com/');
+        if(/proton/.test(host)) suggestions.add('https://mail.proton.me/');
+        if(/yahoo|yahoodns/.test(host)) suggestions.add('https://mail.yahoo.com/');
+        if(/zoho/.test(host)) suggestions.add('https://mail.zoho.com/');
+      });
+
+      return Array.from(suggestions);
+    }
+
+    async function lookupMX(domain) {
+      try {
+        status.textContent = 'Looking up MX records for ' + domain + ' ...';
+        const resp = await fetch('https://dns.google/resolve?name=' + encodeURIComponent(domain) + '&type=MX');
+        if(!resp.ok) throw new Error('dns query failed');
+        const data = await resp.json();
+        const mx = [];
+        if(data && data.Answer) {
+          data.Answer.forEach(a => {
+            const m = a.data.replace(/^\d+\s+/, '').replace(/\.$/, '');
+            if(m) mx.push(m);
+          });
+        }
+        return mx;
+      } catch(e) {
+        console.warn('MX lookup failed or blocked:', e);
+        return [];
+      }
+    }
+
+    function renderResults(domain, candidates, mxHosts) {
+      results.innerHTML = '';
+      const dom = document.createElement('div');
+      dom.innerHTML = '<div class="meta">Domain: <strong>' + domain + '</strong></div>';
+      results.appendChild(dom);
+
+      if(mxHosts && mxHosts.length) {
+        const mxDiv = document.createElement('div');
+        mxDiv.innerHTML = '<div class="mx">MX records: ' + mxHosts.map(m=>'<code>'+m+'</code>').join(', ') + '</div>';
+        results.appendChild(mxDiv);
+      } else {
+        const mxDiv = document.createElement('div');
+        mxDiv.innerHTML = '<div class="mx">MX records: <small>none found / lookup failed</small></div>';
+        results.appendChild(mxDiv);
+      }
+
+      candidates.slice(0,40).forEach(url => {
+        const item = document.createElement('div');
+        item.className = 'item';
+        const left = document.createElement('div');
+        left.innerHTML = '<div style="font-size:14px"><strong>' + url + '</strong></div><div class="meta">guess</div>';
+        const right = document.createElement('div');
+        const open = document.createElement('a');
+        open.className = 'btn';
+        open.href = url;
+        open.target = '_blank';
+        open.rel = 'noopener noreferrer';
+        open.textContent = 'Open';
+        right.appendChild(open);
+        item.appendChild(left);
+        item.appendChild(right);
+        results.appendChild(item);
+      });
+
+      const copyBlock = document.createElement('div');
+      copyBlock.style.marginTop = '8px';
+      copyBlock.innerHTML = '<button id="copyAll" style="padding:8px 12px;border-radius:8px;border:0;background:#60a5fa;cursor:pointer;">Copy all URLs</button>';
+      results.appendChild(copyBlock);
+      document.getElementById('copyAll').addEventListener('click', () => {
+        const t = candidates.join('\n');
+        navigator.clipboard?.writeText(t).then(()=>alert('Copied ' + candidates.length + ' URLs to clipboard.'));
+      });
+    }
+
+    searchBtn.addEventListener('click', async () => {
+      const val = emailInput.value.trim();
+      if(!val) { status.textContent = 'Please enter an email.'; return; }
+      const m = val.match(/^([^@]+)@([^@]+)$/);
+      if(!m) { status.textContent = 'Invalid email format.'; return; }
+      const domain = m[2].toLowerCase();
+      status.textContent = 'Searching for ' + domain + ' ...';
+      results.innerHTML = '';
+      const mx = await lookupMX(domain);
+      const candidates = mkCandidates(domain, mx);
+      status.textContent = 'Done — ' + candidates.length + ' suggestions (guesses).';
+      renderResults(domain, candidates, mx);
+    });
+
+    emailInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ searchBtn.click(); } });
+  </script>
+</body>
+</html>
